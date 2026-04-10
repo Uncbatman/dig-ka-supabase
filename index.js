@@ -59,21 +59,36 @@ function parseMessage(text) {
   return items;
 }
 
-// Webhook verification (GET)
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+function formatOrder(items) {
+  return items
+    .map((i) => `${i.qty} x ${i.name}${i.unit ? ` (${i.unit})` : ""}`)
+    .join("\n");
+}
 
-  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
-    console.log("Webhook verified");
-    return res.status(200).send(challenge);
-  }
+function buildConfirmation(parsedItems) {
+  const summary = formatOrder(parsedItems);
+  return `Order received:\n${summary}`;
+}
 
-  return res.sendStatus(403);
-});
+async function sendWhatsAppMessage(to, message) {
+  const url = `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`;
 
-// Incoming messages (POST)
+  await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body: message },
+    }),
+  });
+}
+
+// Incoming messages webhook
 app.post("/webhook", async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
@@ -107,35 +122,6 @@ app.post("/webhook", async (req, res) => {
     res.sendStatus(500);
   }
 });
-function formatOrder(items) {
-  return items
-    .map((i) => `${i.qty} x ${i.name}${i.unit ? ` (${i.unit})` : ""}`)
-    .join("\n");
-}
-
-function buildConfirmation(parsedItems) {
-  const summary = formatOrder(parsedItems);
-
-  return `Order received:\n${summary}`;
-}
-
-async function sendWhatsAppMessage(to, message) {
-  const url = `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`;
-
-  await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.ACCESS_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body: message },
-    }),
-  });
-}
 
 app.listen(process.env.PORT, () => {
   console.log(`Server running on port ${process.env.PORT}`);
