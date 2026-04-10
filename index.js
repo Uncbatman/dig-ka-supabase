@@ -1,6 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const { createClient } = require("@supabase/supabase-js");
+const { exec } = require("child_process");
 
 const app = express();
 app.use(express.json());
@@ -18,6 +19,16 @@ const PRODUCTS = [
   { name: "bread", keywords: ["bread", "mkate"] },
   { name: "eggs", keywords: ["eggs", "mayai"] },
 ];
+
+// Execute Python parser
+function runPython(message) {
+  return new Promise((resolve, reject) => {
+    exec(`python engine/parser.py "${message}"`, (error, stdout) => {
+      if (error) return reject(error);
+      resolve(JSON.parse(stdout));
+    });
+  });
+}
 
 // Parse message for product items
 function parseMessage(text) {
@@ -89,51 +100,18 @@ async function sendWhatsAppMessage(to, message) {
 }
 
 // Incoming messages webhook
-const { extractOrder } = require("./lib/orchestrator.js");
-
 app.post("/webhook", async (req, res) => {
+  const message = req.body.message;
+
   try {
-    // Handle WhatsApp webhook format
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const whatsappMessage = changes?.value?.messages?.[0];
+    const result = await runPython(message);
 
-    if (whatsappMessage) {
-      const phone = whatsappMessage.from;
-      const text = whatsappMessage.text?.body;
+    console.log("ENGINE OUTPUT:", result);
 
-      console.log("Incoming:", phone, text);
-
-      const parsedItems = parseMessage(text);
-      console.log("Parsed:", parsedItems);
-
-      const { error } = await supabase.from("orders").insert([
-        {
-          customer_phone: phone,
-          message: text,
-          items: parsedItems,
-          status: "pending",
-        },
-      ]);
-
-      if (error) console.error("SUPABASE ERROR:", error);
-      res.sendStatus(200);
-      return;
-    }
-
-    // Handle direct message format
-    const message = req.body.message;
-    if (message) {
-      const order = await extractOrder(message);
-      console.log("ORDER:", order);
-      res.json(order);
-      return;
-    }
-
-    res.sendStatus(400);
+    res.json(result);
   } catch (err) {
-    console.error("SERVER ERROR:", err);
-    res.sendStatus(500);
+    console.error(err);
+    res.status(500).send("Error processing message");
   }
 });
 
