@@ -89,15 +89,18 @@ async function sendWhatsAppMessage(to, message) {
 }
 
 // Incoming messages webhook
+const { extractOrder } = require("./lib/orchestrator.js");
+
 app.post("/webhook", async (req, res) => {
   try {
+    // Handle WhatsApp webhook format
     const entry = req.body.entry?.[0];
     const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
+    const whatsappMessage = changes?.value?.messages?.[0];
 
-    if (message) {
-      const phone = message.from;
-      const text = message.text?.body;
+    if (whatsappMessage) {
+      const phone = whatsappMessage.from;
+      const text = whatsappMessage.text?.body;
 
       console.log("Incoming:", phone, text);
 
@@ -114,9 +117,20 @@ app.post("/webhook", async (req, res) => {
       ]);
 
       if (error) console.error("SUPABASE ERROR:", error);
+      res.sendStatus(200);
+      return;
     }
 
-    res.sendStatus(200);
+    // Handle direct message format
+    const message = req.body.message;
+    if (message) {
+      const order = await extractOrder(message);
+      console.log("ORDER:", order);
+      res.json(order);
+      return;
+    }
+
+    res.sendStatus(400);
   } catch (err) {
     console.error("SERVER ERROR:", err);
     res.sendStatus(500);
