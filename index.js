@@ -78,7 +78,7 @@ function formatOrder(items) {
 
 function buildConfirmation(parsedItems) {
   const summary = formatOrder(parsedItems);
-  return `Order received:\n${summary}`;
+  return `You ordered:\n${summary}\n\nReply YES to confirm or edit.`;
 }
 
 async function sendWhatsAppMessage(to, message) {
@@ -101,17 +101,69 @@ async function sendWhatsAppMessage(to, message) {
 
 // Incoming messages webhook
 app.post("/webhook", async (req, res) => {
-  const message = req.body.message;
-
   try {
-    const result = await runPython(message);
+    // Step 1: Extract WhatsApp message
+    const { from, body } = req.body;
 
-    console.log("ENGINE OUTPUT:", result);
+    if (!from || !body) {
+      return res.status(400).json({ error: "Missing from or body" });
+    }
 
-    res.json(result);
+    console.log(`Message from ${from}: ${body}`);
+
+    // Step 2: Store RAW message to Supabase
+    const raw = await supabase
+      .from("raw_messages")
+      .insert([{ phone: from, message: body }])
+      .select()
+      .single();
+
+    if (raw.error) {
+      console.error("Error storing raw message:", raw.error);
+      return res.status(500).json({ error: "Failed to store message" });
+    }
+
+    console.log("Raw message stored:", raw.data.id);
+
+    // Step 3: Parse message using Python engine
+    const parsed = await runPython(body);
+
+    console.log("ENGINE OUTPUT:", parsed);
+
+    // Step 4: Store parsed result to Supabase
+    const order = await supabase
+      .from("parsed_orders")
+      .insert([
+        {
+          raw_message_id: raw.data.id,
+          items: parsed.items,
+          intent: parsed.intent,
+          confidence: parsed.confidence,
+        },
+      ])
+      .select()
+      .single();
+
+    if (order.error) {
+      console.error("Error storing parsed order:", order.error);
+      return res.status(500).json({ error: "Failed to store parsed order" });
+    }
+
+    console.log("Order stored:", order.data.id);
+
+    // Send confirmation
+    const confirmation = buildConfirmation(parsed.items);
+    await sendWhatsAppMessage(from, confirmation);
+
+    res.json({
+      success: true,
+      rawMessageId: raw.data.id,
+      orderId: order.data.id,
+      parsed,
+    });
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Error processing message");
+    console.error("Webhook error:", err);
+    res.status(500).json({ error: "Error processing message" });
   }
 });
 
