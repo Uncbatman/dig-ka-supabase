@@ -1,41 +1,46 @@
 require("dotenv").config();
 const express = require("express");
 const { createClient } = require("@supabase/supabase-js");
-const { exec } = require("child_process");
 
 const app = express();
 app.use(express.json());
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
+  process.env.SUPABASE_KEY,
 );
 
 // --- CONFIG ---
 const SHOP_PHONE = "2547XXXXXXXX"; // replace with shop number
 
-// --- SAFE PYTHON RUNNER ---
-function runPython(message) {
-  return new Promise((resolve) => {
-    exec(`python engine/parser.py "${message}"`, (error, stdout) => {
-      if (error) {
-        console.error("Python error:", error);
-        return resolve({ items: [], intent: "unknown", confidence: 0 });
-      }
+// --- PARSER ---
+function simpleParse(text) {
+  if (!text) return [];
 
-      try {
-        resolve(JSON.parse(stdout));
-      } catch {
-        return resolve({ items: [], intent: "unknown", confidence: 0 });
-      }
-    });
-  });
+  const items = [];
+  const parts = text.toLowerCase().split(/,|and|na/);
+
+  for (let part of parts) {
+    const words = part.trim().split(" ");
+    let qty = 1;
+
+    const num = words.find((w) => !isNaN(w));
+    if (num) qty = parseInt(num);
+
+    const name = words.filter((w) => isNaN(w)).join(" ");
+
+    if (name) {
+      items.push({ name: name.trim(), qty });
+    }
+  }
+
+  return items;
 }
 
 // --- FORMAT ---
 function formatOrder(items) {
   if (!items || items.length === 0) return "No items detected.";
-  return items.map(i => `${i.qty} x ${i.name}`).join("\n");
+  return items.map((i) => `${i.qty} x ${i.name}`).join("\n");
 }
 
 function buildConfirmation(items) {
@@ -63,7 +68,7 @@ async function sendWhatsAppMessage(to, message) {
           type: "text",
           text: { body: message },
         }),
-      }
+      },
     );
   } catch (err) {
     console.error("Send error:", err);
@@ -172,7 +177,6 @@ app.post("/webhook", (req, res) => {
         // --- SEND CONFIRMATION ---
         const confirmation = buildConfirmation(parsed.items);
         await sendWhatsAppMessage(from, confirmation);
-
       } catch (err) {
         console.error("Async error:", err);
       }
