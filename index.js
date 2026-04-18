@@ -155,7 +155,7 @@ app.post("/webhook", (req, res) => {
         // =========================
         // 3. NEW ORDER (OR EDIT)
         // =========================
-        const parsed = await runPython(message);
+        const parsed = simpleParse(message);
 
         const order = await supabase
           .from("parsed_orders")
@@ -163,9 +163,7 @@ app.post("/webhook", (req, res) => {
             {
               raw_message_id: raw.data.id,
               phone: from,
-              items: parsed.items,
-              intent: parsed.intent,
-              confidence: parsed.confidence,
+              items: parsed,
               status: "pending",
             },
           ])
@@ -175,7 +173,7 @@ app.post("/webhook", (req, res) => {
         if (order.error) return console.error(order.error);
 
         // --- SEND CONFIRMATION ---
-        const confirmation = buildConfirmation(parsed.items);
+        const confirmation = buildConfirmation(parsed);
         await sendWhatsAppMessage(from, confirmation);
       } catch (err) {
         console.error("Async error:", err);
