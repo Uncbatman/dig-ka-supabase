@@ -54,7 +54,7 @@ function formatForShop(order) {
 // --- SEND MESSAGE ---
 async function sendWhatsAppMessage(to, message) {
   try {
-    await fetch(
+    const res = await fetch(
       `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
         method: "POST",
@@ -70,10 +70,18 @@ async function sendWhatsAppMessage(to, message) {
         }),
       },
     );
+
+    const data = await res.json();
+    console.log("WhatsApp response:", data);
   } catch (err) {
     console.error("Send error:", err);
   }
 }
+
+// --- DEBUG ENDPOINT ---
+app.get("/", (req, res) => {
+  res.send("Server is alive");
+});
 
 // --- VERIFY WEBHOOK ---
 app.get("/webhook", (req, res) => {
@@ -174,6 +182,7 @@ app.post("/webhook", (req, res) => {
 
         // --- SEND CONFIRMATION ---
         const confirmation = buildConfirmation(parsed);
+        console.log("SENDING CONFIRMATION:", confirmation);
         await sendWhatsAppMessage(from, confirmation);
       } catch (err) {
         console.error("Async error:", err);
@@ -185,6 +194,6 @@ app.post("/webhook", (req, res) => {
   }
 });
 
-app.listen(process.env.PORT, () => {
-  console.log("Server running");
+app.listen(3000, () => {
+  console.log("Server running on 3000");
 });
