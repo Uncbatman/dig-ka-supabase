@@ -6,7 +6,14 @@ const rateLimit = require("express-rate-limit");
 
 const app = express();
 
-// --- FIX #2: RAW BODY MIDDLEWARE (BEFORE JSON PARSING) ---
+// --- FIX #0: VALIDATE CRITICAL SECRETS IMMEDIATELY ---
+if (!process.env.WHATSAPP_APP_SECRET) {
+  console.error("❌ CRITICAL: Missing WHATSAPP_APP_SECRET in .env");
+  console.error("Add to .env: WHATSAPP_APP_SECRET=your_meta_app_secret");
+  process.exit(1);
+}
+
+// --- RAW BODY MIDDLEWARE (BEFORE JSON PARSING) ---
 // Store raw body before Express parses JSON
 // Required for correct webhook signature verification
 app.use(
@@ -30,7 +37,7 @@ function validateConfig() {
     "SUPABASE_KEY",
     "PHONE_NUMBER_ID",
     "ACCESS_TOKEN",
-    "APP_SECRET",
+    "WHATSAPP_APP_SECRET", // NOW REQUIRED
     "VERIFY_TOKEN",
     "SHOP_PHONE",
   ];
@@ -57,8 +64,8 @@ function validateConfig() {
 validateConfig();
 
 const SHOP_PHONE = process.env.SHOP_PHONE;
-const APP_SECRET = process.env.APP_SECRET;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const APP_SECRET = process.env.WHATSAPP_APP_SECRET; // NOW DEFINED
 
 // --- FIX #6: QUEUE OVERFLOW CAP ---
 const MAX_QUEUE_SIZE = 5000;
@@ -76,7 +83,7 @@ function log(event, data = {}) {
   console.log(JSON.stringify(logEntry));
 }
 
-// --- FIX #2: WEBHOOK SIGNATURE VERIFICATION (USING RAW BODY) ---
+// --- SIGNATURE VERIFICATION (USING RAW BODY) ---
 function verifyWebhookSignature(req) {
   const signature = req.headers["x-hub-signature-256"];
 
@@ -85,7 +92,7 @@ function verifyWebhookSignature(req) {
     return false;
   }
 
-  // FIX: Use raw body, not parsed JSON
+  // Use raw body, not parsed JSON
   const body = req.rawBody;
 
   if (!body) {
@@ -240,7 +247,7 @@ function hasParsingConfidence(items) {
   }
 
   if (items.length === 1 && items[0].qty === 1 && items[0].name.length <= 4) {
-    return false; // Very simple - could be noise ("ok", "yes", "hi")
+    return "Welcome to dig.ka. Enter your order like this; e.g. 'Milk, 2'"; // Very simple - could be noise ("ok", "yes", "hi")
   }
 
   return true; // Reasonable confidence
@@ -301,143 +308,109 @@ async function sendWhatsAppMessage(to, message, retryCount = 0) {
         status: res.status,
         errorCode: data.error?.code,
       });
-      throw new Error(`API_ERROR_${res.status}`);
+
+      // Retry on temporary errors
+      if (
+        retryCount < MAX_RETRIES &&
+        isTemporaryError(new Error(data.error?.message))
+      ) {
+        const delay = calculateBackoff(retryCount);
+        await new Promise((r) => setTimeout(r, delay));
+        return sendWhatsAppMessage(to, message, retryCount + 1);
+      }
+
+      return { success: false, messageId: data.messages?.[0]?.id };
     }
 
     log("send_success", {
       phone: validPhone,
       messageId: data.messages?.[0]?.id,
     });
-    return { success: true, data };
+
+    return {
+      success: true,
+      messageId: data.messages?.[0]?.id,
+    };
   } catch (err) {
-    if (isTemporaryError(err) && retryCount < MAX_RETRIES) {
+    log("send_exception", {
+      phone: to,
+      errorMessage: err.message,
+      retryCount,
+    });
+
+    if (retryCount < MAX_RETRIES && isTemporaryError(err)) {
       const delay = calculateBackoff(retryCount);
-      log("send_retry", { phone: to, attempt: retryCount + 1, delayMs: delay });
       await new Promise((r) => setTimeout(r, delay));
       return sendWhatsAppMessage(to, message, retryCount + 1);
     }
 
-    log("send_failure_final", {
-      phone: to,
-      errorType: err.message?.split("_")[0] || "UNKNOWN",
-    });
-    return { success: false, error: err.message };
+    return { success: false };
   }
 }
 
-// --- FIX #6: QUEUE ENQUEUE WITH OVERFLOW CHECK ---
-async function enqueueMessage(messageData) {
+// --- ENQUEUE MESSAGE (WITH OVERFLOW PROTECTION) ---
+async function enqueueMessage(msg) {
   if (MESSAGE_QUEUE.length >= MAX_QUEUE_SIZE) {
-    log("queue_full_rejecting_message", {
-      queueSize: MESSAGE_QUEUE.length,
-      phone: messageData?.from,
+    log("queue_overflow", {
+      queueLength: MESSAGE_QUEUE.length,
+      maxSize: MAX_QUEUE_SIZE,
     });
-    // Don't add, don't process
-    // Webhook still returned 200, so Facebook thinks we got it
-    // Facebook will retry after backoff
     return;
   }
 
-  MESSAGE_QUEUE.push(messageData);
-  processQueue();
+  MESSAGE_QUEUE.push(msg);
+  await processQueue();
 }
 
-// --- QUEUE PROCESSING ---
+// --- PROCESS QUEUE ---
 async function processQueue() {
-  if (QUEUE_PROCESSING.active || MESSAGE_QUEUE.length === 0) {
-    return;
-  }
+  if (QUEUE_PROCESSING.active) return;
 
   QUEUE_PROCESSING.active = true;
 
   while (MESSAGE_QUEUE.length > 0) {
-    const messageData = MESSAGE_QUEUE.shift();
-
-    try {
-      await handleIncomingMessage(messageData);
-    } catch (err) {
-      log("queue_process_error", {
-        errorType: err.message?.split("_")[0],
-      });
-      // Continue processing other messages
-    }
+    const msg = MESSAGE_QUEUE.shift();
+    await handleMessage(msg);
   }
 
   QUEUE_PROCESSING.active = false;
 }
 
-// --- FIX #8: ORDER EXPIRY LOGIC ---
-async function expireStaleOrders() {
-  try {
-    const now = new Date().toISOString();
-    const { data: stale, error } = await supabase
-      .from("parsed_orders")
-      .select("id, phone, status")
-      .lt("expires_at", now)
-      .in("status", ["pending", "confirmation_sent"]);
+// --- MESSAGE HANDLER ---
+async function handleMessage(msg) {
+  const messageId = msg.id;
+  const phone = msg.from;
+  const message = msg.text?.body || "";
 
-    if (error) {
-      log("expire_orders_query_error", { errorCode: error.code });
-      return;
-    }
+  log("message_received", {
+    messageId,
+    phone,
+    messageLength: message.length,
+  });
 
-    for (const order of stale || []) {
-      await supabase
-        .from("parsed_orders")
-        .update({ status: "expired" })
-        .eq("id", order.id);
-
-      log("order_expired", {
-        orderId: order.id,
-        phone: order.phone,
-        previousStatus: order.status,
-      });
-    }
-  } catch (err) {
-    log("expire_stale_orders_error", {
-      errorType: err.message?.split("_")[0],
-    });
-  }
-}
-
-// Run expiry check every 5 minutes
-setInterval(expireStaleOrders, 5 * 60 * 1000);
-
-// --- MAIN MESSAGE HANDLER ---
-async function handleIncomingMessage(msg) {
-  const message = msg?.text?.body;
-  const from = msg?.from;
-  const messageId = msg?.id;
-
-  if (!message || !from || !messageId) {
-    log("invalid_message", {
-      hasMissing: !message || !from || !messageId,
-    });
+  if (!messageId || !phone) {
+    log("message_missing_fields", { messageId, phone });
     return;
   }
 
-  // FIX #5: CHECK DEDUP FIRST, BEFORE STORING
-  if (await isMessageProcessed(messageId)) {
-    log("message_duplicate", { messageId });
+  // FIX #4: CHECK IF ALREADY PROCESSED (DATABASE-BACKED)
+  const alreadyProcessed = await isMessageProcessed(messageId);
+  if (alreadyProcessed) {
+    log("message_duplicate_skipped", { messageId, phone });
     return;
   }
 
-  let phone;
-  try {
-    phone = normalizeAndValidatePhone(from);
-  } catch (err) {
-    log("invalid_phone_rejected", {
-      errorType: err.message,
-    });
-    return;
-  }
-
-  const lower = message.toLowerCase().trim();
-
-  // --- STORE RAW MESSAGE ---
+  // Insert raw message
   const { data: rawData, error: rawError } = await supabase
     .from("raw_messages")
-    .insert([{ phone, message }])
+    .insert([
+      {
+        message_id: messageId, // FIX: Store message_id for uniqueness
+        phone,
+        message,
+        received_at: new Date().toISOString(),
+      },
+    ])
     .select()
     .single();
 
@@ -450,6 +423,8 @@ async function handleIncomingMessage(msg) {
 
   // Mark processed AFTER successful storage
   await markMessageProcessed(messageId, phone);
+
+  const lower = message.toLowerCase().trim();
 
   // =========================
   // 1. CONFIRMATION HANDLER
@@ -555,7 +530,7 @@ async function handleIncomingMessage(msg) {
       });
       const res = await sendWhatsAppMessage(
         phone,
-        "I didn't understand. Please try:\nitem1, item2, item3\n\nExample: chapati 2, tea 3, samosa 5",
+        "Hey. Please try:\nitem1, item2, item3\n\nExample: Unga 2, milk 3, eggs 5 :)",
       );
       if (!res.success) {
         log("parse_error_send_failed", { phone });
@@ -645,13 +620,14 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// --- FIX #1: RATE LIMITER MIDDLEWARE (BEFORE HANDLER) ---
+// --- FIX #1: RATE LIMITER MIDDLEWARE (FIXED IPv6 ISSUE) ---
 const webhookRateLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 1000,
   keyGenerator: (req) => {
+    // Extract phone number as rate limit key (more stable than IP)
     const from = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.from;
-    return from || req.ip;
+    return from || "unknown"; // Never fall back to req.ip (causes IPv6 crashes)
   },
   skip: (req) => {
     return req.method === "GET";
@@ -659,7 +635,7 @@ const webhookRateLimiter = rateLimit({
   message: "Too many webhook requests",
 });
 
-// --- FIX #1: WEBHOOK HANDLER WITH SIGNATURE VERIFICATION ---
+// --- WEBHOOK HANDLER WITH SIGNATURE VERIFICATION ---
 app.post(
   "/webhook",
   webhookRateLimiter, // Apply rate limit FIRST
@@ -683,6 +659,9 @@ app.post(
           }
 
           const msg = value.messages[0];
+          const messageId = msg.id; // FIX: Extract and use messageId
+
+          log("webhook_message_queued", { messageId });
           await enqueueMessage(msg);
         } catch (err) {
           log("webhook_error", {
