@@ -624,21 +624,12 @@ app.get("/webhook", (req, res) => {
 const webhookRateLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 1000,
-  keyGenerator: (req) => {
-    // Extract phone number as rate limit key (more stable than IP)
-    const from = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.from;
-    return from || "unknown"; // Never fall back to req.ip (causes IPv6 crashes)
-  },
-  skip: (req) => {
-    return req.method === "GET";
-  },
-  message: "Too many webhook requests",
 });
 
 // --- WEBHOOK HANDLER WITH SIGNATURE VERIFICATION ---
 app.post(
   "/webhook",
-  webhookRateLimiter, // Apply rate limit FIRST
+  // Apply rate limit FIRST
   (req, res) => {
     // Verify signature FIRST
     if (!verifyWebhookSignature(req)) {
