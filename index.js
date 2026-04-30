@@ -514,7 +514,19 @@ async function handleMessage(msg) {
 
     return;
   }
+  if (lower === "ok") {
+    // Mark the MOST RECENT forwarded order as done
+    const { data: order } = await supabase
+      .from("parsed_orders")
+      .select("*")
+      .eq("phone", SHOP_PHONE)
+      .eq("status", "forwarded")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
 
+    // ... update it to "done"
+  }
   // =========================
   // 3. NEW ORDER
   // =========================
