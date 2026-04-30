@@ -491,7 +491,7 @@ async function handleMessage(msg) {
       // =========================
       // 2. FORWARD TO SHOP
       // =========================
-      const shopMsg = formatForShop(lastOrder);
+      const shopMsg = `New Order [#${lastOrder.id}]:\n${formatForShop(lastOrder)}\n\nReply: OK or FAILED`;
       const shopRes = await sendWhatsAppMessage(SHOP_PHONE, shopMsg);
 
       if (!shopRes.success) {
@@ -514,18 +514,107 @@ async function handleMessage(msg) {
 
     return;
   }
-  if (lower === "ok") {
-    // Mark the MOST RECENT forwarded order as done
-    const { data: order } = await supabase
-      .from("parsed_orders")
-      .select("*")
-      .eq("phone", SHOP_PHONE)
-      .eq("status", "forwarded")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single();
+  // =========================
+  // 2. SHOP FEEDBACK HANDLER
+  // =========================
+  if (lower === "ok" || lower === "failed") {
+    try {
+      // Find the most recent forwarded order from this shop
+      const { data: order, error: orderError } = await supabase
+        .from("parsed_orders")
+        .select("*")
+        .eq("phone", SHOP_PHONE)
+        .eq("status", "forwarded")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
 
-    // ... update it to "done"
+      // Handle query error
+      if (orderError) {
+        log("shop_feedback_query_error", {
+          errorCode: orderError.code,
+        });
+        await sendWhatsAppMessage(
+          SHOP_PHONE,
+          "Error retrieving order. Please try again.",
+        );
+        return;
+      }
+
+      // No pending order found
+      if (!order) {
+        log("shop_feedback_no_pending_order", { phone: SHOP_PHONE });
+        await sendWhatsAppMessage(SHOP_PHONE, "No pending order found.");
+        return;
+      }
+
+      // Determine the new status
+      const newStatus = lower === "ok" ? "done" : "failed";
+
+      // Update the order status
+      const { error: updateError } = await supabase
+        .from("parsed_orders")
+        .update({
+          status: newStatus,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", order.id);
+
+      if (updateError) {
+        log("shop_feedback_update_error", {
+          orderId: order.id,
+          errorCode: updateError.code,
+        });
+        await sendWhatsAppMessage(
+          SHOP_PHONE,
+          "Failed to update order. Please try again.",
+        );
+        return;
+      }
+
+      // Confirm to shop
+      const shopConfirmMsg = `Order #${order.id}: ${newStatus.toUpperCase()} ✓`;
+      const shopConfirmRes = await sendWhatsAppMessage(
+        SHOP_PHONE,
+        shopConfirmMsg,
+      );
+
+      if (!shopConfirmRes.success) {
+        log("shop_feedback_shop_confirm_send_failed", { orderId: order.id });
+      }
+
+      // Notify customer
+      const customerMsg =
+        newStatus === "done"
+          ? `Your order is ready for pickup! 🎉\n\nOrder ID: #${order.id}`
+          : `Sorry, we couldn't fulfill your order. Please try again.\n\nOrder ID: #${order.id}`;
+
+      const customerRes = await sendWhatsAppMessage(
+        order.customer_phone,
+        customerMsg,
+      );
+
+      if (!customerRes.success) {
+        log("shop_feedback_customer_notify_failed", {
+          orderId: order.id,
+          customerPhone: order.customer_phone,
+        });
+        return;
+      }
+
+      log("shop_feedback_complete", {
+        orderId: order.id,
+        newStatus,
+        customerPhone: order.customer_phone,
+      });
+    } catch (err) {
+      log("shop_feedback_handler_error", {
+        errorType: err.message?.split("_")[0],
+        errorMessage: err.message,
+      });
+    }
+
+    return;
   }
   // =========================
   // 3. NEW ORDER
@@ -560,6 +649,7 @@ async function handleMessage(msg) {
         {
           raw_message_id: rawData.id,
           phone,
+          customer_phone: phone, // Store customer phone for later notification
           items: parsed,
           status: "pending",
           expires_at: expiresAt,
