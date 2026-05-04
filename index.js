@@ -247,7 +247,7 @@ function hasParsingConfidence(items) {
   }
 
   if (items.length === 1 && items[0].qty === 1 && items[0].name.length <= 4) {
-    return "Welcome to dig.ka. Enter your order like this; e.g. 'Milk, 2'"; // Very simple - could be noise ("ok", "yes", "hi")
+    return "Karibu dig.ka. Enter your order like this; e.g. '2 Milk, 6 eggs, unga ugali '"; // Very simple - could be noise ("ok", "yes", "hi")
   }
 
   return true; // Reasonable confidence
@@ -536,7 +536,7 @@ async function handleMessage(msg) {
         });
         await sendWhatsAppMessage(
           SHOP_PHONE,
-          "Error retrieving order. Please try again.",
+          "Order imefail. Please try again.",
         );
         return;
       }
@@ -567,7 +567,7 @@ async function handleMessage(msg) {
         });
         await sendWhatsAppMessage(
           SHOP_PHONE,
-          "Failed to update order. Please try again.",
+          "Failed ku update order. Please try again.",
         );
         return;
       }
@@ -586,8 +586,8 @@ async function handleMessage(msg) {
       // Notify customer
       const customerMsg =
         newStatus === "done"
-          ? `Your order is ready for pickup! 🎉\n\nOrder ID: #${order.id}`
-          : `Sorry, we couldn't fulfill your order. Please try again.\n\nOrder ID: #${order.id}`;
+          ? `Your order iko ready for pickup! 🎉\n\nOrder ID: #${order.id}`
+          : `Sorry, we couldn't fulfill order yako. Please try again.\n\nOrder ID: #${order.id}`;
 
       const customerRes = await sendWhatsAppMessage(
         order.customer_phone,
@@ -631,7 +631,7 @@ async function handleMessage(msg) {
       });
       const res = await sendWhatsAppMessage(
         phone,
-        "Hey. Please try:\nitem1, item2, item3\n\nExample: Unga 2, milk 3, eggs 5 :)",
+        "Hey :). Please try:\nitem1, item2, item3\n\nExample: Unga 2, milk 3, eggs 5",
       );
       if (!res.success) {
         log("parse_error_send_failed", { phone });
