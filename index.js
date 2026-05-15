@@ -10,10 +10,10 @@
  * 4. Recoverable: Admin fallback when automation fails
  */
 
-require("dotenv").config();
-const express = require("express");
-const { createClient } = require("@supabase/supabase-js");
-const crypto = require("crypto");
+import "dotenv/config";
+import express from "express";
+import crypto from "crypto";
+import { supabase } from "./supabase.js";
 
 const app = express();
 
@@ -39,8 +39,6 @@ Object.entries(CONFIG).forEach(([key, value]) => {
     process.exit(1);
   }
 });
-
-const supabase = createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
 
 // Middleware
 app.use(
@@ -157,12 +155,7 @@ function parseOrderItems(text) {
  * Send message with automatic retry.
  * Retries: 3 attempts with exponential backoff.
  */
-async function sendWhatsAppMessage(
-  to,
-  text,
-  buttons = null,
-  maxRetries = 3,
-) {
+async function sendWhatsAppMessage(to, text, buttons = null, maxRetries = 3) {
   const normalizedTo = normalizePhone(to);
   if (!normalizedTo) {
     log("message_invalid_phone", { to });
@@ -271,7 +264,9 @@ async function createOrder(customerPhone, itemText) {
         items: itemText,
         status: ORDER_STATUSES.CREATED,
         created_at: new Date().toISOString(),
-        confirmation_expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        confirmation_expires_at: new Date(
+          Date.now() + 10 * 60 * 1000,
+        ).toISOString(),
       },
     ]);
 
@@ -281,7 +276,11 @@ async function createOrder(customerPhone, itemText) {
         log("order_duplicate_detected", { orderId, customerPhone });
         // Find existing order
         const existing = await getOrderByPhoneRecent(normalizedPhone);
-        return { success: true, orderId: existing?.order_id, isDuplicate: true };
+        return {
+          success: true,
+          orderId: existing?.order_id,
+          isDuplicate: true,
+        };
       }
 
       log("order_creation_error", {
@@ -433,7 +432,9 @@ async function createAndConfirmOrder(customerPhone, itemText) {
     log("order_creation_failed", { customerPhone, error: result.error });
 
     // Admin notification
-    await notifyAdmin(`❌ Order creation failed for ${customerPhone}: ${result.error}`);
+    await notifyAdmin(
+      `❌ Order creation failed for ${customerPhone}: ${result.error}`,
+    );
     return;
   }
 
@@ -684,9 +685,7 @@ app.post("/webhook", async (req, res) => {
     });
 
     // Notify admin of critical errors
-    await notifyAdmin(
-      `🚨 CRITICAL: Webhook processing error: ${err.message}`,
-    );
+    await notifyAdmin(`🚨 CRITICAL: Webhook processing error: ${err.message}`);
   }
 });
 
@@ -735,58 +734,64 @@ app.get("/metrics", async (req, res) => {
 // ============================================================================
 
 // Every 5 minutes: check for expired unconfirmed orders
-setInterval(async () => {
-  try {
-    const now = new Date().toISOString();
-    const { data: expiredOrders, error } = await supabase
-      .from("orders")
-      .select("*")
-      .eq("status", ORDER_STATUSES.CREATED)
-      .lt("confirmation_expires_at", now);
+setInterval(
+  async () => {
+    try {
+      const now = new Date().toISOString();
+      const { data: expiredOrders, error } = await supabase
+        .from("orders")
+        .select("*")
+        .eq("status", ORDER_STATUSES.CREATED)
+        .lt("confirmation_expires_at", now);
 
-    if (error) {
-      log("expired_order_check_error", { errorCode: error.code });
-      return;
-    }
+      if (error) {
+        log("expired_order_check_error", { errorCode: error.code });
+        return;
+      }
 
-    for (const order of expiredOrders || []) {
-      const success = await updateOrderStatus(
-        order.order_id,
-        ORDER_STATUSES.CANCELLED,
-      );
-
-      if (success) {
-        await sendWhatsAppMessage(
-          order.customer_phone,
-          `⏱️ Order #${order.order_id} expired.\n\nYou didn't confirm in time. Send items again?`,
+      for (const order of expiredOrders || []) {
+        const success = await updateOrderStatus(
+          order.order_id,
+          ORDER_STATUSES.CANCELLED,
         );
 
-        log("order_expired", { orderId: order.order_id });
+        if (success) {
+          await sendWhatsAppMessage(
+            order.customer_phone,
+            `⏱️ Order #${order.order_id} expired.\n\nYou didn't confirm in time. Send items again?`,
+          );
+
+          log("order_expired", { orderId: order.order_id });
+        }
       }
+    } catch (err) {
+      log("expired_order_check_exception", { error: err.message });
     }
-  } catch (err) {
-    log("expired_order_check_exception", { error: err.message });
-  }
-}, 5 * 60 * 1000);
+  },
+  5 * 60 * 1000,
+);
 
 // Every hour: cleanup old processing messages (deduplication)
-setInterval(async () => {
-  try {
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const { error } = await supabase
-      .from("message_dedup")
-      .delete()
-      .lt("created_at", oneHourAgo);
+setInterval(
+  async () => {
+    try {
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const { error } = await supabase
+        .from("message_dedup")
+        .delete()
+        .lt("created_at", oneHourAgo);
 
-    if (error) {
-      log("dedup_cleanup_error", { errorCode: error.code });
-    } else {
-      log("dedup_cleanup_success");
+      if (error) {
+        log("dedup_cleanup_error", { errorCode: error.code });
+      } else {
+        log("dedup_cleanup_success");
+      }
+    } catch (err) {
+      log("dedup_cleanup_exception", { error: err.message });
     }
-  } catch (err) {
-    log("dedup_cleanup_exception", { error: err.message });
-  }
-}, 60 * 60 * 1000);
+  },
+  60 * 60 * 1000,
+);
 
 // ============================================================================
 // 🚀 SERVER START

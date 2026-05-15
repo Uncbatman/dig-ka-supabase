@@ -10,12 +10,11 @@
   "author": "",
   "license": "ISC",
   "description": "",
+  "type": "module",
   "dependencies": {
-    "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.105.4",
-    "axios": "^1.14.0",
     "dotenv": "^17.4.1",
     "express": "^5.2.1",
-    "express-rate-limit": "^8.4.0"
+    "openai": "^4.0.0"
   }
 }
